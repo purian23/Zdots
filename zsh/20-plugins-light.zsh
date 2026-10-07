@@ -8,7 +8,15 @@ source "$ZINIT_HOME/zinit.zsh"
 # Order matters: zsh-completions adds to fpath, then compinit scans it
 zinit ice wait'0' lucid
 zinit light zsh-users/zsh-completions
-zinit ice wait'0' lucid atinit"autoload -Uz compinit && compinit -C; zicdreplay -q"
+# compinit -C skips the rescan; rebuild the dump once a day so new completions appear
+_zdots_compinit() {
+  autoload -Uz compinit
+  local dump="${ZDOTDIR:-$HOME}/.zcompdump"
+  local -a stale=($dump(N.mh+24))  # glob qualifiers don't expand inside [[ ]]
+  if [[ -f $dump && ${#stale} -eq 0 ]]; then compinit -C; else compinit; touch "$dump"; zcompile "$dump"; fi
+  unfunction _zdots_compinit
+}
+zinit ice wait'0' lucid atinit"_zdots_compinit; zicdreplay -q"
 zinit light Aloxaf/fzf-tab
 
 # ---- zoxide ----

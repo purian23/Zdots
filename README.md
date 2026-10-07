@@ -39,12 +39,19 @@ Tested on Arch, Ubuntu, Fedora 43, Alpine, macOS.
 
 | Variable | Purpose |
 |----------|---------|
+| `ZDOTS_SHELLS=zsh\|fish\|zsh,fish` | Only set up these shells, without asking about the others |
 | `ZDOTS_YES=1` | Answer yes to all prompts |
 | `ZDOTS_NO=1` | Answer no to all prompts |
 | `ZDOTS_NONINTERACTIVE=1` | Use defaults, skip `chsh` |
 | `ZDOTS_PM=<name>` | Force a package manager |
 | `ZDOTS_MERGE=all\|yes\|no` | Control backup merge |
 | `ZDOTS_LOGFILE=<path>` | Override log path |
+
+## Machine-local config
+
+`setup.sh` regenerates `~/.zshrc`, so don't edit it by hand. Put per-machine aliases, exports and PATH entries in `~/.zshrc.local`, which the generated `~/.zshrc` sources last. When setup replaces an existing `.zshrc`, it can merge that file's aliases, exports, PATH lines and functions into `~/.zshrc.local`. Re-running setup with no module changes leaves `~/.zshrc` untouched and makes no backup.
+
+For Fish, add your own files to `~/.config/fish/conf.d/`. Setup only overwrites the files Zdots ships.
 
 ## Performance
 
@@ -78,7 +85,7 @@ mv ~/.zshrc.bak.YYYYMMDDHHMM ~/.zshrc
 
 # Fish — remove zdots configs
 rm ~/.config/fish/conf.d/{00-options,10-path,20-nvm,30-prompt,40-zoxide,99-extras}.fish
-rm ~/.config/fish/functions/{nvm,node,npm,npx}.fish
+rm ~/.config/fish/functions/nvm.fish
 
 # Remove repo
 rm -rf ~/.zdots

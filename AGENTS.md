@@ -12,7 +12,7 @@ Zdots is a modular Zsh dotfiles/shell-configuration project. There is no build s
 ZDOTS_NONINTERACTIVE=1 bash setup.sh
 ```
 
-This uses prompt defaults and automatically skips `chsh` and the immediate shell-switch (which would hang without a TTY). For full "yes to everything" behavior, use `ZDOTS_YES=1` — but note that `chsh` and shell-switch are still safely skipped when no TTY is detected.
+This uses prompt defaults and automatically skips `chsh` (which would hang without a TTY). For full "yes to everything" behavior, use `ZDOTS_YES=1` — `chsh` is still skipped when no TTY is detected. Setup never launches a shell itself; it prints `exec zsh -l` instead. Add `ZDOTS_SHELLS=zsh` to skip Fish entirely.
 
 To preview without making changes: `bash setup.sh --dry-run`
 
@@ -49,6 +49,7 @@ zsh -c 'time zsh -i -c exit'
 | `zsh/order.txt` | Module load-order manifest |
 | `starship.toml` | Starship prompt config |
 | `~/.zshrc` | Generated config (output of setup.sh) |
+| `~/.zshrc.local` | Machine-local zsh config, sourced last, never overwritten |
 | `~/.local/share/zinit/` | Zinit home + downloaded plugins |
 | `~/.config/starship.toml` | Installed Starship config |
 | `~/.cache/zdots-setup.log` | Setup log |

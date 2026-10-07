@@ -4,7 +4,6 @@ set -g fish_autosuggestion_enabled 1
 
 # ---- History ----
 set -g fish_history default
-set -gx HISTSIZE 50000
 
 # ---- Autosuggestion Style ----
 set -g fish_color_autosuggestion 6c6c6c

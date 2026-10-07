@@ -40,6 +40,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ZSH_MODULE_DIR="$SCRIPT_DIR/zsh"
 FISH_MODULE_DIR="$SCRIPT_DIR/fish"
 FINAL_ZSHRC="$HOME/.zshrc"
+LOCAL_ZSHRC="$HOME/.zshrc.local"
 FISH_CONFIG_DIR="$HOME/.config/fish"
 BACKUP_FILE=""
 STARSHIP_CONFIG="$HOME/.config/starship.toml"
@@ -185,6 +186,11 @@ install_shell_if_missing() {
 }
 
 # === Install shells and decide which to configure ===
+# ZDOTS_SHELLS=zsh|fish|zsh,fish limits setup to those shells without asking.
+want_shell() {
+  [[ -z "${ZDOTS_SHELLS:-}" || ",${ZDOTS_SHELLS// /}," == *",$1,"* ]]
+}
+
 has_zsh=false
 has_fish=false
 configure_zsh=false
@@ -192,7 +198,9 @@ configure_fish=false
 command -v zsh >/dev/null 2>&1 && has_zsh=true
 command -v fish >/dev/null 2>&1 && has_fish=true
 
-if ! $has_zsh; then
+if ! want_shell zsh; then
+  echo -e "${BLUE}Skipping Zsh (ZDOTS_SHELLS=${ZDOTS_SHELLS}).${RESET}"
+elif ! $has_zsh; then
   if [[ $(ask_yes_no "${YELLOW}Zsh is not installed. Install and configure it? [Y/n]: ${RESET}" Y) == y ]]; then
     install_shell_if_missing zsh && { has_zsh=true; configure_zsh=true; }
   else
@@ -205,7 +213,9 @@ else
   fi
 fi
 
-if ! $has_fish; then
+if ! want_shell fish; then
+  echo -e "${BLUE}Skipping Fish (ZDOTS_SHELLS=${ZDOTS_SHELLS}).${RESET}"
+elif ! $has_fish; then
   if [[ $(ask_yes_no "${YELLOW}Fish is not installed. Install and configure it? [Y/n]: ${RESET}" Y) == y ]]; then
     install_shell_if_missing fish && { has_fish=true; configure_fish=true; }
   else
@@ -244,18 +254,6 @@ else
   echo -e "${BLUE}Zinit already installed.${RESET}"
 fi
 
-# === Backup existing .zshrc ===
-if [[ -f "$FINAL_ZSHRC" && ! -L "$FINAL_ZSHRC" ]]; then
-  ts="$(date +%Y%m%d%H%M)"
-  BACKUP_FILE="$HOME/.zshrc.bak.$ts"
-  if $DRY_RUN; then
-    echo -e "${YELLOW}[DRY RUN] Would back up $FINAL_ZSHRC to $BACKUP_FILE${RESET}"
-  else
-    echo -e "${YELLOW}Backing up existing .zshrc to $BACKUP_FILE${RESET}"
-    mv "$FINAL_ZSHRC" "$BACKUP_FILE"
-  fi
-fi
-
 # === Assemble new .zshrc ===
 declare -a modules=()
 if [[ -f "$ZSH_MODULE_DIR/order.txt" ]]; then
@@ -269,22 +267,31 @@ else
   done
 fi
 
-if $DRY_RUN; then
-  for f in "${modules[@]}"; do
-    [[ -f "$f" ]] && zsh_module_count=$((zsh_module_count + 1))
-  done
+NEW_ZSHRC="$(mktemp)"
+trap 'rm -f "$NEW_ZSHRC"' EXIT
+for f in "${modules[@]}"; do
+  if [[ -f "$f" ]]; then
+    cat "$f" >> "$NEW_ZSHRC"
+    echo "" >> "$NEW_ZSHRC"
+    zsh_module_count=$((zsh_module_count + 1))
+  else
+    echo -e "${RED}  ✗ Missing: $(basename "$f")${RESET}"
+  fi
+done
+
+if [[ -f "$FINAL_ZSHRC" ]] && cmp -s "$NEW_ZSHRC" "$FINAL_ZSHRC"; then
+  echo -e "${BLUE}  ✔ ~/.zshrc already up to date (${zsh_module_count} modules)${RESET}"
+elif $DRY_RUN; then
+  [[ -f "$FINAL_ZSHRC" && ! -L "$FINAL_ZSHRC" ]] &&
+    echo -e "${YELLOW}[DRY RUN] Would back up $FINAL_ZSHRC to $HOME/.zshrc.bak.<timestamp>${RESET}"
   echo -e "${BLUE}  ✔ ${zsh_module_count} zsh modules would be assembled${RESET}"
 else
-  : > "$FINAL_ZSHRC"
-  for f in "${modules[@]}"; do
-    if [[ -f "$f" ]]; then
-      cat "$f" >> "$FINAL_ZSHRC"
-      echo "" >> "$FINAL_ZSHRC"
-      zsh_module_count=$((zsh_module_count + 1))
-    else
-      echo -e "${RED}  ✗ Missing: $(basename "$f")${RESET}"
-    fi
-  done
+  if [[ -f "$FINAL_ZSHRC" && ! -L "$FINAL_ZSHRC" ]]; then
+    BACKUP_FILE="$HOME/.zshrc.bak.$(date +%Y%m%d%H%M%S)"
+    echo -e "${YELLOW}Backing up existing .zshrc to $BACKUP_FILE${RESET}"
+    mv "$FINAL_ZSHRC" "$BACKUP_FILE"
+  fi
+  install -m 644 "$NEW_ZSHRC" "$FINAL_ZSHRC"
   echo -e "${GREEN}  ✔ ${zsh_module_count} zsh modules assembled${RESET}"
 fi
 
@@ -300,7 +307,7 @@ if [[ -n "$BACKUP_FILE" && -f "$BACKUP_FILE" ]]; then
     all) merge_choice="y"; merge_all=1 ;;
   esac
   if [[ -z "$merge_choice" ]]; then
-    if [[ $(ask_yes_no "${YELLOW}Merge content from previous .zshrc backup? [y/N]: ${RESET}" N) == y ]]; then
+    if [[ $(ask_yes_no "${YELLOW}Merge aliases/exports/PATH/functions from the old .zshrc into ~/.zshrc.local? [y/N]: ${RESET}" N) == y ]]; then
       merge_choice="y"
     else
       merge_choice="n"
@@ -308,13 +315,14 @@ if [[ -n "$BACKUP_FILE" && -f "$BACKUP_FILE" ]]; then
   fi
 
   if [[ "$merge_choice" == "y" ]] && ! $DRY_RUN; then
-    imported_any=false
+    touch "$LOCAL_ZSHRC"
+    merge_header="# --- Imported from previous .zshrc backup on $(date) ---"
+    # The loops below run in subshells, so track the header in the file itself.
     maybe_add_footer() {
-      if [ "$imported_any" = false ]; then
-        { echo ""; echo "# --- Imported from previous .zshrc backup on $(date) ---"; } >> "$FINAL_ZSHRC"
-        imported_any=true
-      fi
+      grep -Fxq "$merge_header" "$LOCAL_ZSHRC" || { echo ""; echo "$merge_header"; } >> "$LOCAL_ZSHRC"
     }
+    # Keep a line only if neither the generated .zshrc nor .zshrc.local has it.
+    have_line() { grep -Fxq "$1" "$FINAL_ZSHRC" || grep -Fxq "$1" "$LOCAL_ZSHRC"; }
     if (( merge_all == 0 )); then
       [[ $(ask_yes_no "${YELLOW}Merge all categories automatically? [y/N]: ${RESET}" N) == y ]] && merge_all=1
     fi
@@ -322,29 +330,33 @@ if [[ -n "$BACKUP_FILE" && -f "$BACKUP_FILE" ]]; then
       case $section in
         aliases)
           if (( merge_all )) || [[ $(ask_yes_no "${YELLOW}Merge aliases? [Y/n]: ${RESET}" Y) == y ]]; then
-            grep -E '^alias ' "$BACKUP_FILE" 2>/dev/null | while read -r line; do
-              grep -Fxq "$line" "$FINAL_ZSHRC" || { maybe_add_footer; echo "$line" >> "$FINAL_ZSHRC"; }
+            { grep -E '^alias ' "$BACKUP_FILE" 2>/dev/null || true; } | while read -r line; do
+              have_line "$line" || { maybe_add_footer; echo "$line" >> "$LOCAL_ZSHRC"; }
             done
           fi ;;
         exports)
           if (( merge_all )) || [[ $(ask_yes_no "${YELLOW}Merge exports? [Y/n]: ${RESET}" Y) == y ]]; then
-            grep -E '^export ' "$BACKUP_FILE" 2>/dev/null | while read -r line; do
-              grep -Fxq "$line" "$FINAL_ZSHRC" || { maybe_add_footer; echo "$line" >> "$FINAL_ZSHRC"; }
+            { grep -E '^export ' "$BACKUP_FILE" 2>/dev/null || true; } | while read -r line; do
+              have_line "$line" || { maybe_add_footer; echo "$line" >> "$LOCAL_ZSHRC"; }
             done
           fi ;;
         PATH)
           if (( merge_all )) || [[ $(ask_yes_no "${YELLOW}Merge PATH modifications? [Y/n]: ${RESET}" Y) == y ]]; then
-            grep -E '^PATH=' "$BACKUP_FILE" 2>/dev/null | while read -r line; do
-              grep -Fxq "$line" "$FINAL_ZSHRC" || { maybe_add_footer; echo "$line" >> "$FINAL_ZSHRC"; }
+            { grep -E '^PATH=' "$BACKUP_FILE" 2>/dev/null || true; } | while read -r line; do
+              have_line "$line" || { maybe_add_footer; echo "$line" >> "$LOCAL_ZSHRC"; }
             done
           fi ;;
         functions)
           if (( merge_all )) || [[ $(ask_yes_no "${YELLOW}Merge functions? [Y/n]: ${RESET}" Y) == y ]]; then
+            # Emit whole function blocks NUL-separated; skip Zdots' own legacy NVM wrappers.
             awk '
-              /^([[:space:]]*function[[:space:]]+[a-zA-Z0-9_]+\s*\(\)\s*\{|^[a-zA-Z0-9_]+\s*\(\)\s*\{)/ {infunc=1; fn=$0 ORS; next}
-              infunc {fn=fn $0 ORS; if (/^\}/) {print fn; infunc=0}}
-            ' "$BACKUP_FILE" | while IFS= read -r block; do
-              grep -Fq "$block" "$FINAL_ZSHRC" || { maybe_add_footer; printf "%s\n" "$block" >> "$FINAL_ZSHRC"; }
+              /^([[:space:]]*function[[:space:]]+[a-zA-Z0-9_]+\s*\(\)\s*\{|^[a-zA-Z0-9_]+\s*\(\)\s*\{)/ {fn=$0 ORS; if (/\}[[:space:]]*$/) printf "%s%c", fn, 0; else infunc=1; next}
+              infunc {fn=fn $0 ORS; if (/^\}/) {printf "%s%c", fn, 0; infunc=0}}
+            ' "$BACKUP_FILE" | while IFS= read -r -d '' block; do
+              header="${block%%$'\n'*}"
+              name="${header#function }"; name="${name//[[:space:]]/}"; name="${name%%(*}"
+              case "$name" in nvm_lazy_load|nvm|node|npm|npx) continue ;; esac
+              have_line "$header" || { maybe_add_footer; printf "%s" "$block" >> "$LOCAL_ZSHRC"; }
             done
           fi ;;
       esac
@@ -364,12 +376,10 @@ fi
 
 if [[ -n "$FISH_SOURCE_FOR_PORT" ]] && ! $DRY_RUN; then
   if [[ $(ask_yes_no "${YELLOW}Port aliases/exports/PATH from fish config to zsh? [y/N]: ${RESET}" N) == y ]]; then
-    fish_imported=false
+    fish_header="# --- Imported from fish config on $(date) ---"
+    touch "$LOCAL_ZSHRC"
     maybe_add_fish_footer() {
-      if [ "$fish_imported" = false ]; then
-        { echo ""; echo "# --- Imported from fish config on $(date) ---"; } >> "$FINAL_ZSHRC"
-        fish_imported=true
-      fi
+      grep -Fxq "$fish_header" "$LOCAL_ZSHRC" || { echo ""; echo "$fish_header"; } >> "$LOCAL_ZSHRC"
     }
 
     alias_count=0
@@ -380,7 +390,7 @@ if [[ -n "$FISH_SOURCE_FOR_PORT" ]] && ! $DRY_RUN; then
       [[ -f "$conf" ]] || continue
 
       # alias foo 'bar' → alias foo='bar'
-      grep -E "^alias " "$conf" 2>/dev/null | while IFS= read -r line; do
+      { grep -E "^alias " "$conf" 2>/dev/null || true; } | while IFS= read -r line; do
         rest="${line#alias }"
         name="${rest%% *}"
         value="${rest#* }"
@@ -389,35 +399,35 @@ if [[ -n "$FISH_SOURCE_FOR_PORT" ]] && ! $DRY_RUN; then
         value="${value#\"}"
         value="${value%\"}"
         converted="alias ${name}='${value}'"
-        if ! grep -Fxq "$converted" "$FINAL_ZSHRC"; then
+        if ! grep -Fxq "$converted" "$FINAL_ZSHRC" "$LOCAL_ZSHRC" 2>/dev/null; then
           maybe_add_fish_footer
-          echo "$converted" >> "$FINAL_ZSHRC"
+          echo "$converted" >> "$LOCAL_ZSHRC"
         fi
       done
       alias_count=$((alias_count + $(grep -cE "^alias " "$conf" 2>/dev/null || true)))
 
       # set -gx FOO bar → export FOO=bar
-      grep -E "^set -gx " "$conf" 2>/dev/null | while IFS= read -r line; do
+      { grep -E "^set -gx " "$conf" 2>/dev/null || true; } | while IFS= read -r line; do
         rest="${line#set -gx }"
         var="${rest%% *}"
         value="${rest#* }"
         converted="export ${var}=${value}"
-        if ! grep -Fxq "$converted" "$FINAL_ZSHRC"; then
+        if ! grep -Fxq "$converted" "$FINAL_ZSHRC" "$LOCAL_ZSHRC" 2>/dev/null; then
           maybe_add_fish_footer
-          echo "$converted" >> "$FINAL_ZSHRC"
+          echo "$converted" >> "$LOCAL_ZSHRC"
         fi
       done
       export_count=$((export_count + $(grep -cE "^set -gx " "$conf" 2>/dev/null || true)))
 
       # fish_add_path /foo → PATH=/foo:$PATH
-      grep -E "^fish_add_path " "$conf" 2>/dev/null | while IFS= read -r line; do
+      { grep -E "^fish_add_path " "$conf" 2>/dev/null || true; } | while IFS= read -r line; do
         rest="${line#fish_add_path }"
         rest="${rest#-g }"
         rest="${rest#-gP }"
         converted="PATH=${rest}:\$PATH"
-        if ! grep -Fxq "$converted" "$FINAL_ZSHRC"; then
+        if ! grep -Fxq "$converted" "$FINAL_ZSHRC" "$LOCAL_ZSHRC" 2>/dev/null; then
           maybe_add_fish_footer
-          echo "$converted" >> "$FINAL_ZSHRC"
+          echo "$converted" >> "$LOCAL_ZSHRC"
         fi
       done
       path_count=$((path_count + $(grep -cE "^fish_add_path " "$conf" 2>/dev/null || true)))
@@ -470,6 +480,12 @@ if [[ -d "$FISH_MODULE_DIR" ]]; then
       fish_module_count=$((fish_module_count + 1))
     done
 
+    # Older Zdots shipped node/npm/npx wrappers that spawned bash on every call.
+    for legacy in node npm npx; do
+      f="$FISH_CONFIG_DIR/functions/$legacy.fish"
+      grep -q 'Lazy-load nvm' "$f" 2>/dev/null && rm -f "$f"
+    done
+
     for f in "$FISH_MODULE_DIR"/functions/*.fish; do
       [[ -f "$f" ]] || continue
       cp "$f" "$FISH_CONFIG_DIR/functions/"
@@ -500,7 +516,7 @@ if [[ -n "$ZSH_SOURCE_FOR_PORT" ]] && ! $DRY_RUN; then
     } > "$FISH_IMPORT"
 
     # Aliases: alias foo='bar' → alias foo 'bar'
-    grep -E '^alias ' "$ZSH_SOURCE_FOR_PORT" 2>/dev/null | while IFS= read -r line; do
+    { grep -E '^alias ' "$ZSH_SOURCE_FOR_PORT" 2>/dev/null || true; } | while IFS= read -r line; do
       name="${line#alias }"
       name="${name%%=*}"
       value="${line#*=}"
@@ -513,7 +529,7 @@ if [[ -n "$ZSH_SOURCE_FOR_PORT" ]] && ! $DRY_RUN; then
     alias_count=$(grep -cE '^alias ' "$ZSH_SOURCE_FOR_PORT" 2>/dev/null || true)
 
     # Exports: export FOO=bar → set -gx FOO bar
-    grep -E '^export [A-Za-z_]+=' "$ZSH_SOURCE_FOR_PORT" 2>/dev/null | while IFS= read -r line; do
+    { grep -E '^export [A-Za-z_]+=' "$ZSH_SOURCE_FOR_PORT" 2>/dev/null || true; } | while IFS= read -r line; do
       rest="${line#export }"
       var="${rest%%=*}"
       value="${rest#*=}"
@@ -526,7 +542,7 @@ if [[ -n "$ZSH_SOURCE_FOR_PORT" ]] && ! $DRY_RUN; then
     export_count=$(grep -cE '^export [A-Za-z_]+=' "$ZSH_SOURCE_FOR_PORT" 2>/dev/null || true)
 
     # PATH: PATH=/foo/bar:$PATH → fish_add_path /foo/bar
-    grep -E '^PATH=' "$ZSH_SOURCE_FOR_PORT" 2>/dev/null | while IFS= read -r line; do
+    { grep -E '^PATH=' "$ZSH_SOURCE_FOR_PORT" 2>/dev/null || true; } | while IFS= read -r line; do
       value="${line#PATH=}"
       value="${value#\"}"
       value="${value%\"}"
@@ -628,6 +644,7 @@ elif $has_fish; then
 fi
 echo -e "${BLUE}   Starship: ${starship_status}${RESET}"
 [[ -n "$BACKUP_FILE" ]] && echo -e "${BLUE}   Backup:   $BACKUP_FILE${RESET}"
+$configure_zsh && echo -e "${BLUE}   Local:    put machine-specific zsh config in ~/.zshrc.local${RESET}"
 echo ""
 echo -e "${YELLOW}💡 Tip: Install a Mono Nerd Font for best prompt rendering${RESET}"
 echo -e "${YELLOW}   https://www.nerdfonts.com${RESET}"
@@ -660,27 +677,11 @@ else
   fi
 fi
 
-# === Optional immediate switch ===
-if [ -n "${BASH_VERSION-}" ]; then
-  if $DRY_RUN; then
-    echo -e "${YELLOW}[DRY RUN] Would offer to launch zsh or fish${RESET}"
-  elif [[ -n "${ZDOTS_NONINTERACTIVE:-}" || ! -t 0 ]]; then
-    echo -e "${BLUE}Skipping immediate shell switch (non-interactive)${RESET}"
-  elif [[ "$chosen_default" == "fish" ]]; then
-    if $has_fish && [[ $(ask_yes_no "${YELLOW}Launch Fish now? [Y/n]: ${RESET}" Y) == y ]]; then
-      echo -e "${BLUE}Launching Fish...${RESET}"
-      exec fish -l
-    elif $has_zsh && [[ $(ask_yes_no "${YELLOW}Launch Zsh now? [y/N]: ${RESET}" N) == y ]]; then
-      echo -e "${BLUE}Launching Zsh...${RESET}"
-      exec zsh -i -c "source ~/.zshrc; exec zsh -l"
-    fi
-  else
-    if $has_zsh && [[ $(ask_yes_no "${YELLOW}Launch Zsh now? [Y/n]: ${RESET}" Y) == y ]]; then
-      echo -e "${BLUE}Launching Zsh...${RESET}"
-      exec zsh -i -c "source ~/.zshrc; exec zsh -l"
-    elif $has_fish && [[ $(ask_yes_no "${YELLOW}Launch Fish now? [y/N]: ${RESET}" N) == y ]]; then
-      echo -e "${BLUE}Launching Fish...${RESET}"
-      exec fish -l
-    fi
-  fi
+# === Start using the new config ===
+# setup.sh runs in a child process, so it can't swap the caller's shell; launching one
+# here would just nest a shell (and stall any installer that called setup.sh).
+if [[ "$chosen_default" == "fish" ]] && $has_fish; then
+  echo -e "${BLUE}Run ${GREEN}exec fish -l${BLUE} to start using it now.${RESET}"
+elif $has_zsh; then
+  echo -e "${BLUE}Run ${GREEN}exec zsh -l${BLUE} to start using it now.${RESET}"
 fi
